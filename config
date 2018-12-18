@@ -3,8 +3,6 @@ ngx_addon_name=ngx_http_eval_module
 EVAL_SRCS="$ngx_addon_dir/src/ngx_http_eval_module.c"
 EVAL_DEPS="$ngx_addon_dir/src/ddebug.h"
 
-CFLAGS="$CFLAGS -DNDK_SET_VAR"
-
 if test -n "$ngx_module_link"; then
     ngx_module_type=HTTP_AUX_FILTER
     ngx_module_name=$ngx_addon_name
