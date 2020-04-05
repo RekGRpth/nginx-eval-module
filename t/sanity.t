@@ -12,6 +12,9 @@ run_tests();
 __DATA__
 
 === TEST 1: eval
+--- main_config
+    load_module /etc/nginx/modules/ngx_http_echo_module.so;
+    load_module /etc/nginx/modules/ngx_http_eval_module.so;
 --- config
     location /echo {
         eval_subrequest_in_memory off;
@@ -33,6 +36,9 @@ hi]
 
 
 === TEST 2: eval
+--- main_config
+    load_module /etc/nginx/modules/ngx_http_echo_module.so;
+    load_module /etc/nginx/modules/ngx_http_eval_module.so;
 --- config
     location /echo {
         eval_subrequest_in_memory off;
@@ -51,6 +57,9 @@ GET /echo
 
 
 === TEST 3: eval with subrequest in memory
+--- main_config
+    load_module /etc/nginx/modules/ngx_http_echo_module.so;
+    load_module /etc/nginx/modules/ngx_http_eval_module.so;
 --- config
     location /echo {
         eval_subrequest_in_memory on;
@@ -71,6 +80,9 @@ GET /echo
 
 
 === TEST 4: eval with subrequest in memory
+--- main_config
+    load_module /etc/nginx/modules/ngx_http_echo_module.so;
+    load_module /etc/nginx/modules/ngx_http_eval_module.so;
 --- config
     location /echo {
         eval_subrequest_in_memory on;
@@ -91,6 +103,9 @@ GET /echo
 
 
 === TEST 5: eval with explicit buffer size
+--- main_config
+    load_module /etc/nginx/modules/ngx_http_echo_module.so;
+    load_module /etc/nginx/modules/ngx_http_eval_module.so;
 --- config
     location /echo {
         eval_subrequest_in_memory off;
@@ -112,6 +127,9 @@ GET /echo
 
 
 === TEST 6: eval + exec bug
+--- main_config
+    load_module /etc/nginx/modules/ngx_http_echo_module.so;
+    load_module /etc/nginx/modules/ngx_http_eval_module.so;
 --- config
    location /test
    {
@@ -141,6 +159,9 @@ GET /test
 
 
 === TEST 7: inherit parent request's query_string
+--- main_config
+    load_module /etc/nginx/modules/ngx_http_echo_module.so;
+    load_module /etc/nginx/modules/ngx_http_eval_module.so;
 --- config
     location /eval {
         eval_subrequest_in_memory off;
@@ -157,6 +178,9 @@ GET /eval?user=howdy
 
 
 === TEST 8: eval in subrequests
+--- main_config
+    load_module /etc/nginx/modules/ngx_http_echo_module.so;
+    load_module /etc/nginx/modules/ngx_http_eval_module.so;
 --- config
     location /foo {
         add_before_body /bah;
@@ -181,6 +205,9 @@ GET /eval?user=howdy
 
 
 === TEST 9: unescape uri
+--- main_config
+    load_module /etc/nginx/modules/ngx_http_echo_module.so;
+    load_module /etc/nginx/modules/ngx_http_eval_module.so;
 --- config
     location /echo {
         eval $a $b $c {
@@ -200,6 +227,9 @@ a=[], b=[2], c=[a b c]
 
 
 === TEST 10: sanity check
+--- main_config
+    load_module /etc/nginx/modules/ngx_http_echo_module.so;
+    load_module /etc/nginx/modules/ngx_http_eval_module.so;
 --- config
     location /echo {
         eval_subrequest_in_memory off;
@@ -224,6 +254,9 @@ GET /echo
 
 
 === TEST 11: eval with subrequest in memory
+--- main_config
+    load_module /etc/nginx/modules/ngx_http_echo_module.so;
+    load_module /etc/nginx/modules/ngx_http_eval_module.so;
 --- config
     location /echo {
         eval_subrequest_in_memory on;

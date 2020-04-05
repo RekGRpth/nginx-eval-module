@@ -17,6 +17,8 @@ run_tests();
 __DATA__
 
 === TEST 1: bug
+--- main_config
+    load_module /etc/nginx/modules/ngx_http_eval_module.so;
 --- config
     location = /eval {
              eval_escalate on;
@@ -35,6 +37,8 @@ __DATA__
 
 === TEST 2: bug
 --- SKIP
+--- main_config
+    load_module /etc/nginx/modules/ngx_http_eval_module.so;
 --- config
 location /eval/ {
          rewrite   /eval(.*)$  $1 break;
@@ -50,10 +54,14 @@ location /eval/ {
 --- request
     GET /eval
 --- response_body
+--- SKIP
 
 
 
 === TEST 3: github issue #1: "eval" hangs in named locations.
+--- main_config
+    load_module /etc/nginx/modules/ngx_http_echo_module.so;
+    load_module /etc/nginx/modules/ngx_http_eval_module.so;
 --- config
     location @eval {
          eval $var {

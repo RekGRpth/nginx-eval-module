@@ -1,7 +1,7 @@
 # vi:filetype=
 
 use lib 'lib';
-use Test::Nginx::Socket; # skip_all => 'ngx_memc storage commands do not work with the ngx_eval module';
+use Test::Nginx::Socket skip_all => 'ngx_memc storage commands do not work with the ngx_eval module';
 
 plan tests => repeat_each() * (3 * blocks());
 
@@ -15,6 +15,9 @@ run_tests();
 __DATA__
 
 === TEST 1: set in eval (NO subrequest in memory)
+--- main_config
+    load_module /etc/nginx/modules/ngx_http_echo_module.so;
+    load_module /etc/nginx/modules/ngx_http_eval_module.so;
 --- http_config
    upstream mc {
         server 127.0.0.1:$TEST_NGINX_MEMCACHED_PORT;
@@ -51,6 +54,9 @@ __DATA__
 
 
 === TEST 2: set in eval (subrequest in memory)
+--- main_config
+    load_module /etc/nginx/modules/ngx_http_echo_module.so;
+    load_module /etc/nginx/modules/ngx_http_eval_module.so;
 --- http_config
    upstream mc {
         server 127.0.0.1:$TEST_NGINX_MEMCACHED_PORT;
