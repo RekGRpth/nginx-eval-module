@@ -627,7 +627,7 @@ ngx_http_eval_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_str_value(conf->override_content_type,
                              prev->override_content_type, "");
     ngx_conf_merge_size_value(conf->buffer_size, prev->buffer_size,
-                              (size_t) ngx_pagesize);
+                              NGX_CONF_UNSET_SIZE);
     ngx_conf_merge_value(conf->subrequest_in_memory,
                          prev->subrequest_in_memory, 0);
 
@@ -926,14 +926,29 @@ ngx_http_eval_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
     b = &ctx->buffer;
 
     if (b->start == NULL) {
+        if (conf->buffer_size != NGX_CONF_UNSET_SIZE) {
+            len = conf->buffer_size;
+        } else {
+            len = 0;
+
+            for (cl = in; cl; cl = cl->next) {
+                if (!ngx_buf_in_memory(cl->buf)) {
+                    dd("buf not in memory!");
+                    continue;
+                }
+
+                len += cl->buf->last - cl->buf->pos;
+            }
+        }
+
         dd("allocate buffer");
 
-        b->start = ngx_palloc(r->pool, conf->buffer_size);
+        b->start = ngx_palloc(r->pool, len);
         if (b->start == NULL) {
             return NGX_ERROR;
         }
 
-        b->end = b->start + conf->buffer_size;
+        b->end = b->start + len;
         b->pos = b->last = b->start;
     }
 
