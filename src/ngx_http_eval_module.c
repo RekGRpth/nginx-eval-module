@@ -35,6 +35,11 @@ typedef struct {
 
 
 typedef struct {
+    ngx_flag_t enable;
+} ngx_http_eval_main_conf_t;
+
+
+typedef struct {
     ngx_http_eval_loc_conf_t   *base_conf;
     ngx_http_variable_value_t **values;
     unsigned int                done:1;
@@ -61,6 +66,7 @@ ngx_http_eval_init_variables(ngx_http_request_t *r, ngx_http_eval_ctx_t *ctx,
 static ngx_int_t ngx_http_eval_post_subrequest_handler(ngx_http_request_t *r,
     void *data, ngx_int_t rc);
 
+static void *ngx_http_eval_create_main_conf(ngx_conf_t *cf);
 static void *ngx_http_eval_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_eval_merge_loc_conf(ngx_conf_t *cf, void *parent,
     void *child);
@@ -148,7 +154,7 @@ static ngx_http_module_t  ngx_http_eval_module_ctx = {
     NULL,                                  /* preconfiguration */
     ngx_http_eval_init,                    /* postconfiguration */
 
-    NULL,                                  /* create main configuration */
+    ngx_http_eval_create_main_conf,        /* create main configuration */
     NULL,                                  /* init main configuration */
 
     NULL,                                  /* create server configuration */
@@ -599,6 +605,21 @@ ngx_http_eval_urlencoded(ngx_http_request_t *r, ngx_http_eval_ctx_t *ctx)
 
 
 static void *
+ngx_http_eval_create_main_conf(ngx_conf_t *cf)
+{
+    ngx_http_eval_main_conf_t  *conf;
+
+    conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_eval_main_conf_t));
+
+    if (conf == NULL) {
+        return NULL;
+    }
+
+    return conf;
+}
+
+
+static void *
 ngx_http_eval_create_loc_conf(ngx_conf_t *cf)
 {
     ngx_http_eval_loc_conf_t  *conf;
@@ -816,6 +837,9 @@ ngx_http_eval_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     *cf = save;
 
+    if (rv != NGX_CONF_OK) return rv;
+    ngx_http_eval_main_conf_t *main = ngx_http_conf_get_module_main_conf(cf, ngx_http_eval_module);
+    main->enable = 1;
     return rv;
 }
 
@@ -842,6 +866,9 @@ ngx_http_eval_init(ngx_conf_t *cf)
 {
     ngx_http_handler_pt        *h;
     ngx_http_core_main_conf_t  *cmcf;
+
+    ngx_http_eval_main_conf_t *conf = ngx_http_conf_get_module_main_conf(cf, ngx_http_eval_module);
+    if (!conf->enable) return NGX_OK;
 
     cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
 
