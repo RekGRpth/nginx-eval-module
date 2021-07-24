@@ -93,8 +93,6 @@ static ngx_int_t ngx_http_eval_urlencoded(ngx_http_request_t *r,
     ngx_http_eval_ctx_t *ctx);
 
 
-static ngx_flag_t  ngx_http_eval_requires_filter = 1;
-
 static ngx_http_output_header_filter_pt  ngx_http_next_header_filter;
 static ngx_http_output_body_filter_pt    ngx_http_next_body_filter;
 
@@ -879,14 +877,11 @@ ngx_http_eval_init(ngx_conf_t *cf)
 
     *h = ngx_http_eval_handler;
 
-    if (ngx_http_eval_requires_filter) {
-        dd("requires filter");
-        ngx_http_next_header_filter = ngx_http_top_header_filter;
-        ngx_http_top_header_filter = ngx_http_eval_header_filter;
+    ngx_http_next_header_filter = ngx_http_top_header_filter;
+    ngx_http_top_header_filter = ngx_http_eval_header_filter;
 
-        ngx_http_next_body_filter = ngx_http_top_body_filter;
-        ngx_http_top_body_filter = ngx_http_eval_body_filter;
-    }
+    ngx_http_next_body_filter = ngx_http_top_body_filter;
+    ngx_http_top_body_filter = ngx_http_eval_body_filter;
 
     return NGX_OK;
 }
