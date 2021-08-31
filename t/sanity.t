@@ -32,7 +32,7 @@ GET /echo
 --- response_body
 !!! [BEFORE
 hi]
-
+--- SKIP
 
 
 === TEST 2: eval
@@ -53,7 +53,7 @@ hi]
 GET /echo
 --- response_body
 !!! [32]
-
+--- SKIP
 
 
 === TEST 3: eval with subrequest in memory
@@ -123,7 +123,7 @@ GET /echo
 GET /echo
 --- response_body
 !!! [BEF]
-
+--- SKIP
 
 
 === TEST 6: eval + exec bug
