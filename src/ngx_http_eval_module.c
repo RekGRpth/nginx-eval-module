@@ -74,9 +74,6 @@ static char *ngx_http_eval_merge_loc_conf(ngx_conf_t *cf, void *parent,
 static char *ngx_http_eval_block(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 
-static char *ngx_http_eval_subrequest_in_memory(ngx_conf_t *cf,
-    ngx_command_t *cmd, void *conf);
-
 static ngx_int_t ngx_http_eval_header_filter(ngx_http_request_t *r);
 static ngx_int_t ngx_http_eval_body_filter(ngx_http_request_t *r,
     ngx_chain_t *in);
@@ -132,7 +129,7 @@ static ngx_command_t  ngx_http_eval_commands[] = {
 
     { ngx_string("eval_subrequest_in_memory"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
-      ngx_http_eval_subrequest_in_memory,
+      ngx_conf_set_flag_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_eval_loc_conf_t, subrequest_in_memory),
       NULL },
@@ -839,23 +836,6 @@ ngx_http_eval_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_http_eval_main_conf_t *main = ngx_http_conf_get_module_main_conf(cf, ngx_http_eval_module);
     main->enable = 1;
     return rv;
-}
-
-
-static char *
-ngx_http_eval_subrequest_in_memory(ngx_conf_t *cf, ngx_command_t *cmd,
-    void *conf)
-{
-    char                        *res;
-
-    dd("eval subrequest in memory");
-
-    res = ngx_conf_set_flag_slot(cf, cmd, conf);
-    if (res != NGX_CONF_OK) {
-        return res;
-    }
-
-    return NGX_CONF_OK;
 }
 
 
