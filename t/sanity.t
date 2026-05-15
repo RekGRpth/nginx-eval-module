@@ -89,7 +89,6 @@ GET /echo
 !!! [hi]
 
 
-
 === TEST 5: eval with explicit buffer size
 --- config
     location /echo {
