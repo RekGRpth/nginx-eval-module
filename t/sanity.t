@@ -101,7 +101,6 @@ GET /echo
 !!! [hi]
 
 
-
 === TEST 5: eval with explicit buffer size
 --- main_config
     load_module /etc/nginx/modules/ngx_http_echo_module.so;

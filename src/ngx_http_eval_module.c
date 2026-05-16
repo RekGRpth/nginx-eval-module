@@ -35,17 +35,19 @@ typedef struct {
 
 
 typedef struct {
-    ngx_flag_t enable;
-} ngx_http_eval_main_conf_t;
-
-
-typedef struct {
-    ngx_http_eval_loc_conf_t   *base_conf;
-    ngx_http_variable_value_t **values;
-    unsigned int                done:1;
-    unsigned int                in_progress:1;
-    ngx_int_t                   status;
-    ngx_buf_t                   buffer;
+    ngx_http_eval_loc_conf_t           *base_conf;
+    ngx_http_variable_value_t         **values;
+    unsigned int                        done:1;
+    unsigned int                        in_progress:1;
+    unsigned int                        in_memory_hooked:1;
+    ngx_int_t                           status;
+    ngx_buf_t                           buffer;
+    ngx_int_t                         (*orig_input_filter_init)(void *data);
+    ngx_int_t                         (*orig_input_filter)(void *data,
+                                                            ssize_t bytes);
+    void                               *orig_input_filter_ctx;
+    ngx_event_pipe_output_filter_pt     orig_pipe_output_filter;
+    void                               *orig_pipe_output_ctx;
 } ngx_http_eval_ctx_t;
 
 
@@ -77,6 +79,9 @@ static char *ngx_http_eval_block(ngx_conf_t *cf, ngx_command_t *cmd,
 static ngx_int_t ngx_http_eval_header_filter(ngx_http_request_t *r);
 static ngx_int_t ngx_http_eval_body_filter(ngx_http_request_t *r,
     ngx_chain_t *in);
+static ngx_int_t ngx_http_eval_input_filter(void *data, ssize_t bytes);
+static ngx_int_t ngx_http_eval_pipe_output_filter(void *data,
+    ngx_chain_t *chain);
 
 static void ngx_http_eval_discard_bufs(ngx_pool_t *pool, ngx_chain_t *in);
 
@@ -858,11 +863,362 @@ ngx_http_eval_init(ngx_conf_t *cf)
 
     *h = ngx_http_eval_handler;
 
-    ngx_http_next_header_filter = ngx_http_top_header_filter;
-    ngx_http_top_header_filter = ngx_http_eval_header_filter;
+    if (ngx_http_eval_requires_filter) {
+        dd("requires filter");
+        ngx_http_next_header_filter = ngx_http_top_header_filter;
+        ngx_http_top_header_filter = ngx_http_eval_header_filter;
 
-    ngx_http_next_body_filter = ngx_http_top_body_filter;
-    ngx_http_top_body_filter = ngx_http_eval_body_filter;
+        ngx_http_next_body_filter = ngx_http_top_body_filter;
+        ngx_http_top_body_filter = ngx_http_eval_body_filter;
+    }
+
+    return NGX_OK;
+}
+
+
+static void
+ngx_http_eval_capture_bytes(ngx_http_request_t *r, ngx_http_eval_ctx_t *ctx,
+    u_char *src, size_t bytes)
+{
+    ngx_http_eval_loc_conf_t    *conf;
+    ngx_buf_t                   *b;
+    size_t                       rest, len;
+
+    conf = ngx_http_get_module_loc_conf(r->parent, ngx_http_eval_module);
+
+    b = &ctx->buffer;
+    if (b->start == NULL) {
+        b->start = ngx_palloc(r->pool, conf->buffer_size);
+        if (b->start == NULL) {
+            return;
+        }
+        b->end = b->start + conf->buffer_size;
+        b->pos = b->last = b->start;
+    }
+
+    rest = b->end - b->last;
+    len = bytes;
+    if (len > rest) {
+        len = rest;
+    }
+    if (len > 0) {
+        b->last = ngx_copy(b->last, src, len);
+    }
+}
+
+
+static ngx_int_t
+ngx_http_eval_input_filter_init(void *data)
+{
+    ngx_http_request_t          *r = data;
+    ngx_http_eval_ctx_t         *ctx;
+    ngx_int_t                    rc;
+
+    dd("eval input_filter_init wrapper called");
+
+    ctx = ngx_http_get_module_ctx(r, ngx_http_eval_module);
+    if (ctx == NULL) {
+        return NGX_OK;
+    }
+
+    /*
+     * Run original input_filter_init with its expected ctx (modules like
+     * memc expect their own ctx as `data`, not r). The upstream module may
+     * also swap input_filter to e.g. the chunked variant inside its init.
+     */
+    if (ctx->orig_input_filter_init) {
+        rc = ctx->orig_input_filter_init(ctx->orig_input_filter_ctx);
+        if (rc != NGX_OK) {
+            return rc;
+        }
+    }
+
+    /*
+     * Now install our hooks. The upstream module has finalised its
+     * choice of input/output filters and nginx core has populated
+     * p->output_filter. Hooking here ensures nothing overwrites our
+     * wrappers before the read/write loops invoke them.
+     *
+     * We re-read upstream->input_filter (it may have been replaced by
+     * orig_input_filter_init, e.g. proxy switching to a chunked filter)
+     * and remember the *new* pointer along with whatever ctx the upstream
+     * module wants to receive there.
+     */
+    if (r->upstream->input_filter != NULL
+        && r->upstream->input_filter != ngx_http_eval_input_filter)
+    {
+        /*
+         * Save the (possibly newly-installed) input_filter, but DON'T
+         * overwrite orig_input_filter_ctx — header_filter already saved
+         * the upstream module's expected ctx (e.g. memc_ctx for memc).
+         * u->input_filter_ctx is currently `r` (we set it in header_filter)
+         * so reading it here would clobber that saved value.
+         */
+        ctx->orig_input_filter = r->upstream->input_filter;
+        r->upstream->input_filter = ngx_http_eval_input_filter;
+        dd("hooked u->input_filter");
+    }
+
+    /*
+     * Pipe output_filter is set by nginx core (ngx_http_upstream_send_response
+     * line 3478) AFTER header_filter ran but BEFORE input_filter_init. It is
+     * always ngx_http_upstream_output_filter with output_ctx = r, so saving
+     * those here is safe.
+     */
+    if (r->upstream->pipe != NULL
+        && r->upstream->pipe->output_filter != NULL
+        && r->upstream->pipe->output_filter != ngx_http_eval_pipe_output_filter)
+    {
+        ctx->orig_pipe_output_filter = r->upstream->pipe->output_filter;
+        ctx->orig_pipe_output_ctx = r->upstream->pipe->output_ctx;
+        r->upstream->pipe->output_filter = ngx_http_eval_pipe_output_filter;
+        r->upstream->pipe->output_ctx = r;
+        dd("hooked pipe output_filter");
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_eval_pipe_output_filter(void *data, ngx_chain_t *chain)
+{
+    ngx_http_request_t          *r = data;
+    ngx_http_eval_ctx_t         *ctx;
+    ngx_chain_t                 *cl;
+
+    dd("eval pipe output_filter called");
+
+    ctx = ngx_http_get_module_ctx(r, ngx_http_eval_module);
+    if (ctx == NULL || ctx->orig_pipe_output_filter == NULL) {
+        return NGX_ERROR;
+    }
+
+    /*
+     * `chain` here contains exactly the bufs that the upstream pipe
+     * decoded from the upstream connection (after chunked/copy filters
+     * have processed them). Body filters layered on top of this output
+     * filter (e.g. echo_before_body) can prepend their own bufs, but
+     * they do so DOWNSTREAM of this call — so what we see here is purely
+     * upstream-produced data.
+     */
+    for (cl = chain; cl; cl = cl->next) {
+        if (!ngx_buf_in_memory(cl->buf)) {
+            continue;
+        }
+        if (cl->buf->pos < cl->buf->last) {
+            ngx_http_eval_capture_bytes(r, ctx, cl->buf->pos,
+                                        (size_t) (cl->buf->last
+                                                  - cl->buf->pos));
+        }
+    }
+
+    return ctx->orig_pipe_output_filter(ctx->orig_pipe_output_ctx, chain);
+}
+
+
+static ngx_int_t
+ngx_http_eval_input_filter(void *data, ssize_t bytes)
+{
+    ngx_http_request_t          *r = data;
+    ngx_http_eval_ctx_t         *ctx;
+
+    dd("eval input_filter called, bytes=%d", (int) bytes);
+    ctx = ngx_http_get_module_ctx(r, ngx_http_eval_module);
+    if (ctx == NULL || r->upstream == NULL) {
+        if (ctx && ctx->orig_input_filter) {
+            return ctx->orig_input_filter(ctx->orig_input_filter_ctx, bytes);
+        }
+        return NGX_OK;
+    }
+
+    /*
+     * nginx's upstream module just received `bytes` bytes from the wire and
+     * placed them at u->buffer.last. We snapshot those bytes here, before
+     * the original input filter (which may advance b->last) runs.
+     */
+    if (bytes > 0) {
+        ngx_http_eval_capture_bytes(r, ctx, r->upstream->buffer.last,
+                                    (size_t) bytes);
+    }
+
+    if (ctx->orig_input_filter) {
+        return ctx->orig_input_filter(ctx->orig_input_filter_ctx, bytes);
+    }
+
+    return NGX_OK;
+}
+
+
+static void
+ngx_http_eval_capture_bytes(ngx_http_request_t *r, ngx_http_eval_ctx_t *ctx,
+    u_char *src, size_t bytes)
+{
+    ngx_http_eval_loc_conf_t    *conf;
+    ngx_buf_t                   *b;
+    size_t                       rest, len;
+
+    conf = ngx_http_get_module_loc_conf(r->parent, ngx_http_eval_module);
+
+    b = &ctx->buffer;
+    if (b->start == NULL) {
+        b->start = ngx_palloc(r->pool, conf->buffer_size);
+        if (b->start == NULL) {
+            return;
+        }
+        b->end = b->start + conf->buffer_size;
+        b->pos = b->last = b->start;
+    }
+
+    rest = b->end - b->last;
+    len = bytes;
+    if (len > rest) {
+        len = rest;
+    }
+    if (len > 0) {
+        b->last = ngx_copy(b->last, src, len);
+    }
+}
+
+
+static ngx_int_t
+ngx_http_eval_input_filter_init(void *data)
+{
+    ngx_http_request_t          *r = data;
+    ngx_http_eval_ctx_t         *ctx;
+    ngx_int_t                    rc;
+
+    dd("eval input_filter_init wrapper called");
+
+    ctx = ngx_http_get_module_ctx(r, ngx_http_eval_module);
+    if (ctx == NULL) {
+        return NGX_OK;
+    }
+
+    /*
+     * Run original input_filter_init with its expected ctx (modules like
+     * memc expect their own ctx as `data`, not r). The upstream module may
+     * also swap input_filter to e.g. the chunked variant inside its init.
+     */
+    if (ctx->orig_input_filter_init) {
+        rc = ctx->orig_input_filter_init(ctx->orig_input_filter_ctx);
+        if (rc != NGX_OK) {
+            return rc;
+        }
+    }
+
+    /*
+     * Now install our hooks. The upstream module has finalised its
+     * choice of input/output filters and nginx core has populated
+     * p->output_filter. Hooking here ensures nothing overwrites our
+     * wrappers before the read/write loops invoke them.
+     *
+     * We re-read upstream->input_filter (it may have been replaced by
+     * orig_input_filter_init, e.g. proxy switching to a chunked filter)
+     * and remember the *new* pointer along with whatever ctx the upstream
+     * module wants to receive there.
+     */
+    if (r->upstream->input_filter != NULL
+        && r->upstream->input_filter != ngx_http_eval_input_filter)
+    {
+        /*
+         * Save the (possibly newly-installed) input_filter, but DON'T
+         * overwrite orig_input_filter_ctx — header_filter already saved
+         * the upstream module's expected ctx (e.g. memc_ctx for memc).
+         * u->input_filter_ctx is currently `r` (we set it in header_filter)
+         * so reading it here would clobber that saved value.
+         */
+        ctx->orig_input_filter = r->upstream->input_filter;
+        r->upstream->input_filter = ngx_http_eval_input_filter;
+        dd("hooked u->input_filter");
+    }
+
+    /*
+     * Pipe output_filter is set by nginx core (ngx_http_upstream_send_response
+     * line 3478) AFTER header_filter ran but BEFORE input_filter_init. It is
+     * always ngx_http_upstream_output_filter with output_ctx = r, so saving
+     * those here is safe.
+     */
+    if (r->upstream->pipe != NULL
+        && r->upstream->pipe->output_filter != NULL
+        && r->upstream->pipe->output_filter != ngx_http_eval_pipe_output_filter)
+    {
+        ctx->orig_pipe_output_filter = r->upstream->pipe->output_filter;
+        ctx->orig_pipe_output_ctx = r->upstream->pipe->output_ctx;
+        r->upstream->pipe->output_filter = ngx_http_eval_pipe_output_filter;
+        r->upstream->pipe->output_ctx = r;
+        dd("hooked pipe output_filter");
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_eval_pipe_output_filter(void *data, ngx_chain_t *chain)
+{
+    ngx_http_request_t          *r = data;
+    ngx_http_eval_ctx_t         *ctx;
+    ngx_chain_t                 *cl;
+
+    dd("eval pipe output_filter called");
+
+    ctx = ngx_http_get_module_ctx(r, ngx_http_eval_module);
+    if (ctx == NULL || ctx->orig_pipe_output_filter == NULL) {
+        return NGX_ERROR;
+    }
+
+    /*
+     * `chain` here contains exactly the bufs that the upstream pipe
+     * decoded from the upstream connection (after chunked/copy filters
+     * have processed them). Body filters layered on top of this output
+     * filter (e.g. echo_before_body) can prepend their own bufs, but
+     * they do so DOWNSTREAM of this call — so what we see here is purely
+     * upstream-produced data.
+     */
+    for (cl = chain; cl; cl = cl->next) {
+        if (!ngx_buf_in_memory(cl->buf)) {
+            continue;
+        }
+        if (cl->buf->pos < cl->buf->last) {
+            ngx_http_eval_capture_bytes(r, ctx, cl->buf->pos,
+                                        (size_t) (cl->buf->last
+                                                  - cl->buf->pos));
+        }
+    }
+
+    return ctx->orig_pipe_output_filter(ctx->orig_pipe_output_ctx, chain);
+}
+
+
+static ngx_int_t
+ngx_http_eval_input_filter(void *data, ssize_t bytes)
+{
+    ngx_http_request_t          *r = data;
+    ngx_http_eval_ctx_t         *ctx;
+
+    dd("eval input_filter called, bytes=%d", (int) bytes);
+    ctx = ngx_http_get_module_ctx(r, ngx_http_eval_module);
+    if (ctx == NULL || r->upstream == NULL) {
+        if (ctx && ctx->orig_input_filter) {
+            return ctx->orig_input_filter(ctx->orig_input_filter_ctx, bytes);
+        }
+        return NGX_OK;
+    }
+
+    /*
+     * nginx's upstream module just received `bytes` bytes from the wire and
+     * placed them at u->buffer.last. We snapshot those bytes here, before
+     * the original input filter (which may advance b->last) runs.
+     */
+    if (bytes > 0) {
+        ngx_http_eval_capture_bytes(r, ctx, r->upstream->buffer.last,
+                                    (size_t) bytes);
+    }
+
+    if (ctx->orig_input_filter) {
+        return ctx->orig_input_filter(ctx->orig_input_filter_ctx, bytes);
+    }
 
     return NGX_OK;
 }
@@ -872,6 +1228,7 @@ static ngx_int_t
 ngx_http_eval_header_filter(ngx_http_request_t *r)
 {
     ngx_http_eval_ctx_t             *ctx;
+    ngx_http_eval_loc_conf_t        *conf;
 
     dd("header filter");
 
@@ -886,6 +1243,48 @@ ngx_http_eval_header_filter(ngx_http_request_t *r)
     }
 
     r->filter_need_in_memory = 1;
+
+    conf = ngx_http_get_module_loc_conf(r->parent, ngx_http_eval_module);
+
+    /*
+     * In subrequest_in_memory mode the upstream body is consumed by the
+     * upstream module and is no longer available in r->upstream->buffer
+     * when the post-subrequest handler runs. Hook into the upstream's
+     * input filter so we capture exactly the bytes received from the
+     * upstream connection, independent of body filters (e.g.
+     * echo_before_body) that may inject extra data downstream.
+     *
+     * Proxy uses pipe-based buffered mode by default (u->pipe->input_filter)
+     * and falls back to u->input_filter when buffering is off. Memc-style
+     * modules use u->input_filter. Hook both so we cover all cases.
+     */
+    /*
+     * Wrap u->input_filter_init so we can install our capture hooks AFTER
+     * the upstream module has finalised its choice of input/output filters
+     * (e.g. proxy switches to chunked filter inside its input_filter_init,
+     * and nginx core sets p->output_filter between the header filter and
+     * input_filter_init). Wrapping input_filter_init is the only callback
+     * boundary that survives both rewirings.
+     */
+    if (conf->subrequest_in_memory
+        && r->upstream != NULL
+        && !ctx->in_memory_hooked)
+    {
+        /*
+         * Save the upstream module's original input_filter_init and the
+         * ctx it expects (which may NOT be r — e.g. memc passes its own
+         * module ctx). Replace the init pointer with our wrapper and swap
+         * input_filter_ctx to r so our wrapper can locate the eval ctx
+         * regardless of upstream module choice.
+         */
+        ctx->orig_input_filter_init = r->upstream->input_filter_init;
+        ctx->orig_input_filter_ctx = r->upstream->input_filter_ctx;
+        r->upstream->input_filter_init = ngx_http_eval_input_filter_init;
+        r->upstream->input_filter_ctx = r;
+        ctx->in_memory_hooked = 1;
+        dd("installed eval input_filter_init wrapper, u->buffering=%d",
+           (int) r->upstream->buffering);
+    }
 
     /* suppress header output */
 
@@ -922,6 +1321,12 @@ ngx_http_eval_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 
     conf = ngx_http_get_module_loc_conf(r->parent, ngx_http_eval_module);
 
+    /*
+     * In subrequest_in_memory mode, the upstream body is captured by our
+     * input_filter hook installed in the header filter, so we don't need
+     * to inspect bufs here. Just let the chain pass through (nginx discards
+     * subrequest output for in-memory subrequests).
+     */
     if (conf->subrequest_in_memory) {
         return ngx_http_next_body_filter(r, in);
     }
